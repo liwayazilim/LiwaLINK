@@ -1,0 +1,19 @@
+[Unit]
+Description=LiwaLink relay (frps)
+After=network-online.target liwalink-auth.service
+Wants=network-online.target liwalink-auth.service
+
+[Service]
+User=liwalink
+Group=liwalink
+ExecStart=/usr/local/bin/frps -c /etc/liwalink/frps.toml
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

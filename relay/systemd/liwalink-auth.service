@@ -1,0 +1,18 @@
+[Unit]
+Description=LiwaLink auth service (frps plugin and Caddy certificate checks)
+After=network.target
+
+[Service]
+User=liwalink
+Group=liwalink
+EnvironmentFile=/etc/liwalink/relay.env
+ExecStart=/usr/bin/python3 /opt/liwalink/liwalink-auth.py serve --listen 127.0.0.1:9000
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

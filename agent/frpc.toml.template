@@ -1,0 +1,31 @@
+# LiwaLink agent (frpc). The installers fill in the __PLACEHOLDERS__.
+
+serverAddr = "__SERVER__"
+serverPort = __SERVER_PORT__
+
+# Who this restaurant is. The relay checks the token and only lets this agent
+# publish https://__RESTAURANT_ID__.__SERVER__
+user = "__RESTAURANT_ID__"
+metadatas.token = "__TOKEN__"
+
+# If the internet or the relay is down at boot, keep retrying instead of exiting.
+loginFailExit = false
+
+# Check the relay's certificate against the LiwaLink CA, so the token is never
+# sent to an impostor.
+transport.tls.enable = true
+transport.tls.trustedCaFile = '__CA_FILE__'
+transport.tls.serverName = "__SERVER__"
+
+log.to = "console"
+log.level = "info"
+log.disablePrintColor = true
+
+# Only the HTTP API is published. Never add the database here: the relay
+# refuses anything other than one http proxy on this restaurant's subdomain.
+[[proxies]]
+name = "api"
+type = "http"
+localIP = "__LOCAL_HOST__"
+localPort = __LOCAL_PORT__
+subdomain = "__RESTAURANT_ID__"

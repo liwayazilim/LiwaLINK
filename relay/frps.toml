@@ -1,0 +1,39 @@
+# LiwaLink relay (frps). install-relay.sh renders this to /etc/liwalink/frps.toml,
+# replacing __DOMAIN__ and __DASHBOARD_PASSWORD__.
+
+# Restaurant agents dial out to this port from their own network.
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# Agents must use TLS. The certificate is signed by our own CA (see
+# gen-relay-cert.sh) and agents check it, so nobody can impersonate the relay
+# and collect restaurant tokens.
+transport.tls.force = true
+transport.tls.certFile = "/etc/liwalink/tls/relay.crt"
+transport.tls.keyFile = "/etc/liwalink/tls/relay.key"
+
+# Public traffic arrives at Caddy (HTTPS on 443), which forwards it to this
+# local-only port. frps picks the restaurant by Host header:
+#   rest-1234.__DOMAIN__  ->  the agent logged in as rest-1234
+# proxyBindAddr also keeps any proxy port off the public interface.
+proxyBindAddr = "127.0.0.1"
+vhostHTTPPort = 8080
+subDomainHost = "__DOMAIN__"
+
+# Dashboard, local only. From your laptop:  ssh -L 7500:127.0.0.1:7500 <relay>
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "__DASHBOARD_PASSWORD__"
+
+log.to = "console"
+log.level = "info"
+log.disablePrintColor = true
+
+# Per-restaurant tokens and "only your own subdomain, only HTTP" rules live in
+# liwalink-auth.py. frps asks it before accepting every login and every proxy.
+[[httpPlugins]]
+name = "liwalink-auth"
+addr = "127.0.0.1:9000"
+path = "/frp/handler"
+ops = ["Login", "NewProxy"]

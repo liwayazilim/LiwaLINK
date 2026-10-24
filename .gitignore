@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Never commit relay secrets or generated configs if run from a checkout
+*.key
+restaurants.json
+dashboard-password

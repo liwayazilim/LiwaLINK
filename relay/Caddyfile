@@ -1,0 +1,30 @@
+# LiwaLink relay: public HTTPS in front of frps. install-relay.sh renders this to
+# /etc/caddy/Caddyfile, replacing __DOMAIN__ and __EMAIL__.
+{
+	email __EMAIL__
+	# Restaurant certificates are issued on the first request to each subdomain,
+	# but only if liwalink-auth says that restaurant exists.
+	on_demand_tls {
+		ask http://127.0.0.1:9000/caddy/ask
+	}
+}
+
+# The relay's own name. Agents download the CA certificate from here at install
+# time (over HTTPS with a normal public certificate) to verify the tunnel.
+__DOMAIN__ {
+	handle /ca.crt {
+		root * /etc/liwalink/public
+		file_server
+	}
+	handle {
+		respond "LiwaLink relay" 200
+	}
+}
+
+# https://<restaurant-id>.__DOMAIN__  ->  frps  ->  that restaurant's agent
+*.__DOMAIN__ {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:8080
+}
