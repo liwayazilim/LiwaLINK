@@ -9,6 +9,8 @@
 #   FRP_DIR=/path/with/frps-and-frpc   skip the frp download
 #   CADDY=/path/to/caddy               also test the public HTTPS layer
 #   E2E_KEEP_LOGS=1                    keep the logs even when everything passes
+#   RELAY_CERT_CMD="pwsh -NoProfile -File relay/gen-relay-cert.ps1"
+#                                      test the Windows certificate generator instead
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -98,8 +100,13 @@ fi
 echo "Setting up in $W"
 
 # --- relay ----------------------------------------------------------------------
-"$ROOT/relay/gen-relay-cert.sh" "$DOMAIN" "$W/tls" >/dev/null 2>&1
-"$ROOT/relay/gen-relay-cert.sh" impostor.test "$W/other-ca" >/dev/null 2>&1
+if [[ -n "${RELAY_CERT_CMD:-}" ]]; then
+  read -r -a gen_cert <<<"$RELAY_CERT_CMD"
+else
+  gen_cert=("$ROOT/relay/gen-relay-cert.sh")
+fi
+"${gen_cert[@]}" "$DOMAIN" "$W/tls" >"$W/gen-cert.log" 2>&1 || { cat "$W/gen-cert.log"; exit 1; }
+"${gen_cert[@]}" impostor.test "$W/other-ca" >>"$W/gen-cert.log" 2>&1 || { cat "$W/gen-cert.log"; exit 1; }
 mkdir -p "$W/public" && cp "$W/tls/ca.crt" "$W/public/ca.crt"
 
 TOKEN_1234="$(auth add rest-1234 --name "Pizza Place" | awk '/Token:/ {print $2}')"
@@ -119,7 +126,7 @@ render "$ROOT/relay/frps.toml" "$W/frps.toml" \
   'vhostHTTPPort = 8080' "vhostHTTPPort = $VHOST_PORT" \
   'webServer.port = 7500' "webServer.port = $DASH_PORT" \
   '127.0.0.1:9000' "127.0.0.1:$AUTH_PORT" \
-  /etc/liwalink/tls "$W/tls"
+  __CONFIG_DIR__ "$W"
 "$FRP_DIR/frps" verify -c "$W/frps.toml" >/dev/null
 start frps "$FRP_DIR/frps" -c "$W/frps.toml"
 wait_for "$W/frps.log" "frps started successfully" || { cat "$W/frps.log"; exit 1; }
@@ -161,7 +168,16 @@ expect_log "raw TCP port (e.g. a database) is refused" tcp "only http proxies ar
 stop_last
 
 agent impostor rest-5678 "$TOKEN_5678" "$W/other-ca/ca.crt"
-expect_log "agent refuses a relay whose certificate is not from our CA" impostor "certificate signed by unknown authority"
+# Depending on timing frpc reports the rejected certificate as an x509 error or
+# just "session shutdown", so check that it keeps failing and never logs in.
+wait_for "$W/impostor.log" "connect to server error" || true
+sleep 2
+if grep -q "connect to server error" "$W/impostor.log" && ! grep -q "login to server success" "$W/impostor.log"; then
+  pass "agent refuses a relay whose certificate is not from our CA"
+else
+  fail "agent refuses a relay whose certificate is not from our CA"
+  tail -n 15 "$W/impostor.log" | sed 's/^/        | /'
+fi
 stop_last
 
 echo "Real agent:"
@@ -193,7 +209,7 @@ if [[ -n "${CADDY:-}" ]]; then
 	storage file_system $W/caddy-data" \
     '127.0.0.1:9000' "127.0.0.1:$AUTH_PORT" \
     '127.0.0.1:8080' "127.0.0.1:$VHOST_PORT" \
-    /etc/liwalink/public "$W/public" \
+    __CONFIG_DIR__ "$W" \
     __DOMAIN__ "$DOMAIN"
   start caddy "$CADDY" run --adapter caddyfile --config "$W/Caddyfile"
   for _ in $(seq 1 50); do

@@ -13,12 +13,13 @@ Each restaurant machine runs a small **agent** ([frpc](https://github.com/fatedi
 
 | Path | What it is |
 |---|---|
-| `relay/install-relay.sh` | One-shot installer for the relay server (Ubuntu/Debian) |
+| `relay/install-relay.ps1` | One-shot installer for a **Windows Server** relay (2019 or later) |
+| `relay/install-relay.sh` | Same, for an Ubuntu/Debian relay |
 | `relay/frps.toml` | Tunnel server config (frps) |
 | `relay/Caddyfile` | Public HTTPS: per-restaurant certificates, forwards to frps |
 | `relay/liwalink-auth.py` | Per-restaurant tokens, the rules for what an agent may publish, and the admin CLI |
-| `relay/gen-relay-cert.sh` | Creates the private CA that agents use to verify the relay |
-| `relay/systemd/` | Services: `liwalink-relay` (frps) and `liwalink-auth` |
+| `relay/gen-relay-cert.ps1` / `.sh` | Creates the private CA that agents use to verify the relay |
+| `relay/systemd/` | Linux services: `liwalink-relay` (frps) and `liwalink-auth` |
 | `agent/frpc.toml.template` | Agent config. Both installers fill it in. |
 | `agent/install-agent.ps1` | Installs the agent as a Windows service ("LiwaLink Agent") |
 | `agent/install-agent.sh` | Same, as a systemd service, for Linux restaurant machines |
@@ -26,31 +27,67 @@ Each restaurant machine runs a small **agent** ([frpc](https://github.com/fatedi
 
 ## 1. Set up the relay (once)
 
-You need an Ubuntu 22.04/24.04 (or Debian 12) server with a public IP, and a domain you control. These examples use `link.example.com`.
+You need a server with a public IP and a domain you control. These examples use `link.example.com`.
 
 1. **DNS first.** Create two A records pointing at the server: `link.example.com` and `*.link.example.com`.
-2. **Firewall.** Allow inbound TCP 80, 443 and 7000 in your cloud provider's firewall. The script opens them in `ufw` if `ufw` is active.
-3. Copy the `relay/` folder to the server and run:
+2. **Firewall.** Allow inbound TCP 80, 443 and 7000 in your hosting provider's firewall. If the server is behind a router, forward those ports to it. The installers open them in the server's own firewall.
+3. Run the installer for your server's OS.
 
-   ```bash
-   sudo ./install-relay.sh --domain link.example.com --email ops@example.com
-   ```
+**Windows Server 2019 or later.** Ports 80 and 443 must be free, so IIS can't be serving them. From an elevated PowerShell:
 
-The script installs frps, Caddy and the auth service, creates the tunnel CA, and starts everything. Re-running it upgrades in place and keeps the CA, the dashboard password and the restaurants.
+```powershell
+git clone https://github.com/liwayazilim/LiwaLINK.git
+cd LiwaLINK\relay
+powershell -ExecutionPolicy Bypass -File .\install-relay.ps1 -Domain link.example.com -Email ops@example.com
+```
+
+This installs three Windows services, all set to start with Windows and restart on failure:
+
+| Service | What it runs |
+|---|---|
+| `liwalink-auth` | `liwalink-auth.py` on a private Python that only this relay uses |
+| `liwalink-relay` | frps |
+| `liwalink-caddy` | Caddy |
+
+Locations:
+
+| What | Where |
+|---|---|
+| Programs | `C:\Program Files\LiwaLink\Relay` |
+| Config, CA, restaurant list, logs | `C:\ProgramData\LiwaLink\Relay` (readable by SYSTEM and Administrators only) |
+
+The installer stops early if another program is already using a port the relay needs.
+
+**Ubuntu 22.04/24.04 or Debian 12:**
+
+```bash
+git clone https://github.com/liwayazilim/LiwaLINK.git && cd LiwaLINK/relay
+sudo ./install-relay.sh --domain link.example.com --email ops@example.com
+```
+
+Both installers install frps, Caddy and the auth service, create the tunnel CA, and start everything. Re-running one upgrades in place and keeps the CA, the dashboard password and the restaurants.
 
 ## 2. Add a restaurant
+
+On Windows (elevated PowerShell):
+
+```powershell
+& 'C:\Program Files\LiwaLink\Relay\liwalink-admin.cmd' add rest-1234 --name "Pizza Place"
+```
+
+On Linux:
 
 ```bash
 sudo liwalink-admin add rest-1234 --name "Pizza Place"
 ```
 
-This prints the restaurant's URL, its token (shown once) and the exact command for installing the agent. Other commands:
+This prints the restaurant's URL, its token (shown once) and the exact command for installing the agent. The other commands work the same way:
 
-```bash
-sudo liwalink-admin list
-sudo liwalink-admin rotate rest-1234   # new token, e.g. if a machine is replaced
-sudo liwalink-admin remove rest-1234   # revoke (customer leaves, stops paying...)
-```
+| Command | Use it to |
+|---|---|
+| `list` | See all restaurants |
+| `rotate rest-1234` | Issue a new token, e.g. when a machine is replaced |
+| `remove rest-1234` | Revoke access, e.g. when a customer leaves or stops paying |
 
 Restaurant IDs become subdomains, so use lowercase letters, digits and dashes.
 
@@ -88,13 +125,17 @@ Replace the ngrok URL in your apps with `https://rest-1234.link.example.com`. Re
 - **A restaurant can only publish its own subdomain, and only over HTTP.** An agent can't take another restaurant's URL, and it can't open a raw TCP port. That rules out exposing a database port, even by accident. Put only the API behind the tunnel, and keep the API's own authentication.
 - **Agents verify the relay.** The tunnel uses TLS, and the certificate is signed by a private CA created on your relay. Without this, frpc would accept any server's certificate, and a fake relay could collect tokens.
 - **Certificates are issued only for real restaurants.** Caddy gets a Let's Encrypt certificate the first time a restaurant's URL is used, and only after `liwalink-auth` confirms the restaurant exists.
-- **Admin surfaces stay local.** The frps dashboard and the auth service listen on `127.0.0.1` only. To open the dashboard, run `ssh -L 7500:127.0.0.1:7500 <relay>`, then browse to `http://127.0.0.1:7500`. The user is `admin`, and the password is in `/etc/liwalink/dashboard-password`.
+- **Admin surfaces stay local.** The frps dashboard and the auth service listen on `127.0.0.1` only. The dashboard is at `http://127.0.0.1:7500` on the relay itself; from another machine on Linux, use `ssh -L 7500:127.0.0.1:7500 <relay>`. The user is `admin`. The password is in `C:\ProgramData\LiwaLink\Relay\dashboard-password.txt` on Windows, or `/etc/liwalink/dashboard-password` on Linux.
 
 ## Operating it
 
-- **Status:** `systemctl status liwalink-relay liwalink-auth caddy`
-- **Login and proxy decisions:** `journalctl -u liwalink-auth -f`
-- **Revoking:** `remove` stops new logins right away. An agent that is already connected stays up until it reconnects. Run `sudo systemctl restart liwalink-relay` to drop all agents at once; legitimate ones reconnect within seconds.
+| | Windows | Linux |
+|---|---|---|
+| Status | `Get-Service liwalink-*` | `systemctl status liwalink-relay liwalink-auth caddy` |
+| Login and proxy decisions | `C:\ProgramData\LiwaLink\Relay\logs\liwalink-auth.err.log` | `journalctl -u liwalink-auth -f` |
+| Drop all agents | `Restart-Service liwalink-relay` | `sudo systemctl restart liwalink-relay` |
+
+- **Revoking:** `remove` stops new logins right away. An agent that is already connected stays up until it reconnects. To cut it off now, drop all agents by restarting the relay service; legitimate ones reconnect within seconds.
 - **Upgrading frp:** update `FRP_VERSION` in the installers. Upgrade the relay first, then the agents. frp guarantees compatibility across nine minor versions.
 
 ## Testing locally
@@ -102,6 +143,7 @@ Replace the ngrok URL in your apps with `https://rest-1234.link.example.com`. Re
 ```bash
 ./test/e2e-local.sh                      # downloads frp, needs python3, openssl, curl
 CADDY=/path/to/caddy ./test/e2e-local.sh # also tests the HTTPS layer
+RELAY_CERT_CMD="pwsh -NoProfile -File relay/gen-relay-cert.ps1" ./test/e2e-local.sh  # with the Windows certificates
 ```
 
 The test starts the auth service, frps, a fake restaurant API and several agents, using the real config templates. It checks that:
@@ -114,6 +156,7 @@ The test starts the auth service, frps, a fake restaurant API and several agents
 - **Windows Defender may flag `frpc.exe`** as a "HackTool", because frp is also used by attackers. If Defender quarantines it, the install fails or the service won't start. The proper fix is to build frpc from source and sign it with your company's code-signing certificate. You can also submit the file to Microsoft as a false positive.
 - **Port 7000 outbound.** Some locked-down networks only allow 443. If that becomes a problem, frp can tunnel over WebSocket/TLS on 443 through Caddy (`transport.protocol = "wss"`).
 - **Let's Encrypt rate limits.** New certificates are limited per domain (currently 50 a week). For a large rollout, switch to a single wildcard certificate (`*.link.example.com`). That needs Caddy's DNS-challenge plugin for your DNS provider.
+- **Windows relay services run as LocalSystem.** That's the simplest setup that works. Running them under their own low-privilege service accounts is a worthwhile hardening step. Defender can also flag `frps.exe`, for the same reason as `frpc.exe`.
 - **One relay is a single point of failure.** Add monitoring, for example on `https://link.example.com/`. A second relay can come later.
 - **The registry is a JSON file** at `/var/lib/liwalink/restaurants.json`. `liwalink-auth.py` is small, so it's easy to point at your own customer database instead.
 - **Packaging.** For production, wrap the Windows agent in your existing installer, or an MSI, rather than a PowerShell script.

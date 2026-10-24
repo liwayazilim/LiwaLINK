@@ -8,7 +8,7 @@ Runs next to frps on the relay server and answers two kinds of questions:
   * Caddy on-demand TLS "ask" calls: should we get a certificate for this host?
 
 The same file is the admin CLI for adding, listing and revoking restaurants.
-Standard library only, so it runs on any server with Python 3.8+.
+Standard library only, so it runs on any server with Python 3.8+, Linux or Windows.
 
     liwalink-auth.py serve  [--listen 127.0.0.1:9000]
     liwalink-auth.py add    <restaurant-id> [--name "Pizza Place"]
@@ -20,7 +20,6 @@ Standard library only, so it runs on any server with Python 3.8+.
 import argparse
 import contextlib
 import datetime
-import fcntl
 import hashlib
 import hmac
 import json
@@ -31,8 +30,15 @@ import secrets
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
 
 DEFAULT_REGISTRY = "/var/lib/liwalink/restaurants.json"
 # Restaurant IDs double as DNS labels: rest-1234 -> rest-1234.<domain>
@@ -45,6 +51,37 @@ def hash_token(token):
     # Tokens are 256-bit random values, so a plain SHA-256 is enough; no need
     # for a slow password hash.
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+@contextlib.contextmanager
+def exclusive_lock(path):
+    """Serialize admin commands that edit the registry at the same time."""
+    with open(path, "a+") as f:
+        if fcntl:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            yield
+            return
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # retries for ~10s, then raises
+        try:
+            yield
+        finally:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def replace_file(src, dst):
+    # On Windows the rename fails while the server has the file open for a
+    # read, which only lasts a moment, so retry briefly.
+    for _ in range(50):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            time.sleep(0.1)
+    os.replace(src, dst)
 
 
 class Registry:
@@ -83,8 +120,7 @@ class Registry:
         """Lock, load, let the caller modify, then atomically write back."""
         directory = os.path.dirname(os.path.abspath(self.path))
         os.makedirs(directory, exist_ok=True)
-        with open(self.path + ".lock", "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with exclusive_lock(self.path + ".lock"):
             try:
                 with open(self.path) as f:
                     data = json.load(f)
@@ -97,7 +133,7 @@ class Registry:
                 f.flush()
                 os.fsync(f.fileno())
             os.chmod(tmp, 0o640)
-            os.replace(tmp, self.path)
+            replace_file(tmp, self.path)
 
 
 class Auth:

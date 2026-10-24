@@ -1,5 +1,6 @@
-# LiwaLink relay (frps). install-relay.sh renders this to /etc/liwalink/frps.toml,
-# replacing __DOMAIN__ and __DASHBOARD_PASSWORD__.
+# LiwaLink relay (frps). install-relay.sh / install-relay.ps1 fill in the
+# placeholders. The config folder is /etc/liwalink on Linux and
+# C:/ProgramData/LiwaLink/Relay on Windows.
 
 # Restaurant agents dial out to this port from their own network.
 bindAddr = "0.0.0.0"
@@ -9,8 +10,8 @@ bindPort = 7000
 # gen-relay-cert.sh) and agents check it, so nobody can impersonate the relay
 # and collect restaurant tokens.
 transport.tls.force = true
-transport.tls.certFile = "/etc/liwalink/tls/relay.crt"
-transport.tls.keyFile = "/etc/liwalink/tls/relay.key"
+transport.tls.certFile = "__CONFIG_DIR__/tls/relay.crt"
+transport.tls.keyFile = "__CONFIG_DIR__/tls/relay.key"
 
 # Public traffic arrives at Caddy (HTTPS on 443), which forwards it to this
 # local-only port. frps picks the restaurant by Host header:

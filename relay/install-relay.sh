@@ -91,7 +91,8 @@ chmod 0755 /usr/local/bin/liwalink-admin
 echo "==> frps config"
 pwfile=/etc/liwalink/dashboard-password
 [[ -f "$pwfile" ]] || (umask 077; openssl rand -hex 16 > "$pwfile")
-sed -e "s|__DOMAIN__|$DOMAIN|g" -e "s|__DASHBOARD_PASSWORD__|$(cat "$pwfile")|g" \
+sed -e "s|__DOMAIN__|$DOMAIN|g" -e "s|__CONFIG_DIR__|/etc/liwalink|g" \
+  -e "s|__DASHBOARD_PASSWORD__|$(cat "$pwfile")|g" \
   "$HERE/frps.toml" > /etc/liwalink/frps.toml
 chgrp liwalink /etc/liwalink/frps.toml && chmod 640 /etc/liwalink/frps.toml
 runuser -u liwalink -- /usr/local/bin/frps verify -c /etc/liwalink/frps.toml
@@ -100,7 +101,8 @@ echo "==> Caddy config"
 if [[ -f /etc/caddy/Caddyfile ]] && ! grep -q "LiwaLink relay" /etc/caddy/Caddyfile; then
   cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%Y%m%d%H%M%S)"
 fi
-sed -e "s|__DOMAIN__|$DOMAIN|g" -e "s|__EMAIL__|$EMAIL|g" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
+sed -e "s|__DOMAIN__|$DOMAIN|g" -e "s|__CONFIG_DIR__|/etc/liwalink|g" -e "s|__EMAIL__|$EMAIL|g" \
+  "$HERE/Caddyfile" > /etc/caddy/Caddyfile
 caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile >/dev/null
 
 echo "==> Starting services"

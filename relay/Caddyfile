@@ -1,5 +1,5 @@
-# LiwaLink relay: public HTTPS in front of frps. install-relay.sh renders this to
-# /etc/caddy/Caddyfile, replacing __DOMAIN__ and __EMAIL__.
+# LiwaLink relay: public HTTPS in front of frps. install-relay.sh / install-relay.ps1
+# fill in the placeholders.
 {
 	email __EMAIL__
 	# Restaurant certificates are issued on the first request to each subdomain,
@@ -13,7 +13,7 @@
 # time (over HTTPS with a normal public certificate) to verify the tunnel.
 __DOMAIN__ {
 	handle /ca.crt {
-		root * /etc/liwalink/public
+		root * __CONFIG_DIR__/public
 		file_server
 	}
 	handle {
