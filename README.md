@@ -60,6 +60,18 @@ Locations:
 
 The installer stops early if another program is already using a port the relay needs.
 
+**If IIS already serves websites on this server.** Only one program can listen on port 443 per IP, so the relay needs an IP address of its own:
+
+1. Get a second public IPv4 address from your hosting provider and add it to the server's network adapter.
+2. Point the `link` and `*.link` DNS records at the **new** IP. Leave the website's records alone.
+3. Run the installer with `-BindAddress <new IP>`. Caddy then listens only on that IP.
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\install-relay.ps1 -Domain link.example.com -Email ops@example.com -BindAddress 203.0.113.20
+   ```
+
+4. By default IIS listens on every IP. If it does here, the installer stops and prints `netsh http add iplisten ...` commands that keep IIS on its current addresses. Run them, which takes the websites down for a few seconds, then run the installer again.
+
 **Ubuntu 22.04/24.04 or Debian 12:**
 
 ```bash
@@ -159,7 +171,7 @@ The test starts the auth service, frps, a fake restaurant API and several agents
 - **Port 7000 outbound.** Some locked-down networks only allow 443. If that becomes a problem, frp can tunnel over WebSocket/TLS on 443 through Caddy (`transport.protocol = "wss"`).
 - **Let's Encrypt rate limits.** New certificates are limited per domain (currently 50 a week). For a large rollout, switch to a single wildcard certificate (`*.link.example.com`). That needs Caddy's DNS-challenge plugin for your DNS provider.
 - **Windows relay services run as LocalSystem.** That's the simplest setup that works. Running them under their own low-privilege service accounts is a worthwhile hardening step. Defender flags `frps.exe` too, for the same reason as `frpc.exe`; `install-relay.ps1 -DefenderExclusion` works around it with an exclusion.
-- **The Windows relay needs 80 and 443 to itself.** Caddy binds them, so the relay can't share a server with IIS sites. Either give the relay its own server (recommended: it is a separate security boundary anyway), or put IIS in front with URL Rewrite + ARR proxying `*.link.example.com` to `127.0.0.1:8080` and a wildcard certificate; the installer doesn't support that layout yet.
+- **Sharing a server with IIS.** The relay needs ports 80 and 443 on an IP of its own, so on an IIS server it uses a second IP (`-BindAddress`, see section 1). A separate server is still the cleaner option, because the relay faces the internet and is then a separate security boundary from your websites.
 - **One relay is a single point of failure.** Add monitoring, for example on `https://link.example.com/`. A second relay can come later.
 - **The registry is a JSON file** at `/var/lib/liwalink/restaurants.json`. `liwalink-auth.py` is small, so it's easy to point at your own customer database instead.
 - **Packaging.** For production, wrap the Windows agent in your existing installer, or an MSI, rather than a PowerShell script.

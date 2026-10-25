@@ -12,6 +12,11 @@
 
     Point DNS at this server first: A records for <Domain> and *.<Domain>.
 
+    If IIS already serves websites on 80/443, give the relay its own IP
+    address and pass it as -BindAddress. Caddy then listens only on that IP.
+    If IIS is still listening on every IP, the installer stops and prints the
+    netsh commands that limit IIS to the website's addresses.
+
     Re-running upgrades in place and keeps the CA, the dashboard password and
     the restaurants. Run from an elevated PowerShell; if scripts are blocked:
         powershell -ExecutionPolicy Bypass -File .\install-relay.ps1 ...
@@ -27,6 +32,9 @@
 
 .EXAMPLE
     .\install-relay.ps1 -Domain link.example.com -Email ops@example.com -DefenderExclusion
+
+.EXAMPLE
+    .\install-relay.ps1 -Domain link.example.com -Email ops@example.com -BindAddress 203.0.113.20
 
 .EXAMPLE
     .\install-relay.ps1 -Uninstall
@@ -46,6 +54,11 @@ param(
     # Exclude the install folder from Windows Defender so frps.exe is not quarantined.
     [Parameter(ParameterSetName = 'Install')]
     [switch] $DefenderExclusion,
+
+    # The relay's own IP on this server, when IIS keeps 80/443 on another IP.
+    [Parameter(ParameterSetName = 'Install')]
+    [ValidateScript({ $ip = $null; [ipaddress]::TryParse($_, [ref] $ip) })]
+    [string] $BindAddress,
 
     [Parameter(Mandatory, ParameterSetName = 'Uninstall')]
     [switch] $Uninstall
@@ -198,19 +211,54 @@ foreach ($file in 'frps.toml', 'Caddyfile', 'liwalink-auth.py', 'gen-relay-cert.
     if (-not (Test-Path (Join-Path $PSScriptRoot $file))) { throw "$file must be next to this script (run it from the repository's relay folder)" }
 }
 
+if ($BindAddress -and -not (Get-NetIPAddress -IPAddress $BindAddress -ErrorAction SilentlyContinue)) {
+    throw "$BindAddress is not assigned to this server. Add it to the network adapter first (your hosting provider has the details)."
+}
+
 Remove-RelayServices  # an earlier install must not count as "port in use"
-$busy = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { ($PublicPorts + $LocalPorts) -contains $_.LocalPort })
+$listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+
+# With -BindAddress, 80/443 only clash when something listens on that IP or on all IPs.
+$webPorts = 80, 443
+$wildcard = '0.0.0.0', '::'
+if ($BindAddress) {
+    $httpSysEverywhere = @($listeners | Where-Object {
+        $webPorts -contains $_.LocalPort -and $_.OwningProcess -eq 4 -and $wildcard -contains $_.LocalAddress })
+    if ($httpSysEverywhere) {
+        $keep = @(Get-NetIPAddress -ErrorAction SilentlyContinue | Where-Object {
+            $_.IPAddress -ne $BindAddress -and $_.IPAddress -notlike 'fe80*' -and $_.IPAddress -notlike '169.254.*' } |
+            ForEach-Object { $_.IPAddress } | Sort-Object -Unique)
+        $commands = ($keep | ForEach-Object { "    netsh http add iplisten ipaddress=$_" }) -join "`n"
+        throw @"
+IIS (HTTP.sys) listens on ports 80/443 of every IP, including $BindAddress.
+Limit it to this server's other addresses, restart it, then run this installer again:
+$commands
+    net stop http /y
+    net start w3svc
+Also start any other service that 'net stop http' stopped (for example: net start winrm).
+The websites keep working on their current IP; expect a few seconds of downtime.
+"@
+    }
+}
+$busy = @($listeners | Where-Object {
+    if ($BindAddress -and $webPorts -contains $_.LocalPort) { ($wildcard + $BindAddress) -contains $_.LocalAddress }
+    else { ($PublicPorts + $LocalPorts) -contains $_.LocalPort }
+})
 if ($busy) {
     $owners = $busy | Sort-Object LocalPort -Unique | ForEach-Object {
         $owner = if ($_.OwningProcess -eq 4) { 'System/HTTP.sys, usually IIS' } else { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName }
         "port $($_.LocalPort) ($owner)"
     }
-    throw "Already in use: $($owners -join ', '). The relay needs $($PublicPorts -join ', ') (public) and $($LocalPorts -join ', ') (local only)."
+    $hint = if (-not $BindAddress -and ($busy | Where-Object { $webPorts -contains $_.LocalPort })) {
+        ' If IIS must keep 80/443, give the relay its own IP and pass -BindAddress (see the README).'
+    }
+    throw "Already in use: $($owners -join ', '). The relay needs $($PublicPorts -join ', ') (public) and $($LocalPorts -join ', ') (local only).$hint"
 }
 
 try {
     $resolved = @(Resolve-DnsName -Name $Domain -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress })
-    Write-Host "    $Domain resolves to $($resolved -join ', ') (must be this server's public IP)"
+    $wanted = if ($BindAddress) { $BindAddress } else { "this server's public IP" }
+    Write-Host "    $Domain resolves to $($resolved -join ', ') (must be $wanted)"
 } catch {
     Write-Warning "$Domain does not resolve yet. Add the DNS records; HTTPS certificates can only be issued once it does."
 }
@@ -289,6 +337,12 @@ try {
     $caddyConfig = Join-Path $ConfigDir 'Caddyfile'
     Write-Template 'frps.toml' $frpsConfig $values
     Write-Template 'Caddyfile' $caddyConfig $values
+    if ($BindAddress) {
+        # Listen only on the relay's IP so IIS keeps 80/443 on the others.
+        $caddyText = Get-Content -Path $caddyConfig -Raw
+        $caddyText = ([regex] '(?m)^\{[ \t]*$').Replace($caddyText, "{`n`tdefault_bind $BindAddress", 1)
+        [IO.File]::WriteAllText($caddyConfig, $caddyText, $Utf8NoBom)
+    }
     $registry = Join-Path $ConfigDir 'restaurants.json'
 
     Assert-Program 'Checking frps.toml' $frps @('verify', '-c', $frpsConfig)
@@ -327,10 +381,16 @@ rem   liwalink-admin add rest-1234 --name "Pizza Place"
     }
     Start-Service -Name 'liwalink-relay'
     Start-Service -Name 'liwalink-caddy'
-    foreach ($port in $PublicPorts + 8080) {
-        if (-not (Wait-Until { Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction Stop } 20)) {
-            throw "Nothing is listening on port $port; see the logs in $LogDir"
-        }
+    # Check the owner too: with -BindAddress, IIS also listens on 80/443.
+    $portOwners = [ordered] @{ 80 = 'caddy'; 443 = 'caddy'; 7000 = 'frps'; 8080 = 'frps' }
+    foreach ($entry in $portOwners.GetEnumerator()) {
+        $port = $entry.Key
+        $owner = $entry.Value
+        $listening = Wait-Until {
+            Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction Stop |
+                Where-Object { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -eq $owner }
+        } 20
+        if (-not $listening) { throw "$owner is not listening on port $port; see the logs in $LogDir" }
     }
 
     Write-Host "==> Checking https://$Domain (first certificate can take a minute)"
@@ -342,8 +402,9 @@ rem   liwalink-admin add rest-1234 --name "Pizza Place"
 
 Write-Host ''
 Write-Host 'LiwaLink relay is installed and running.'
+$relayIp = if ($BindAddress) { $BindAddress } else { "this server's public IP" }
 if (-not $https) {
-    Write-Warning "https://$Domain is not reachable yet. Check that DNS for $Domain and *.$Domain points at this server's public IP, and that TCP 80, 443 and 7000 are open in your hosting provider's firewall (or forwarded by the router). Caddy retries on its own; see $LogDir\liwalink-caddy.err.log"
+    Write-Warning "https://$Domain is not reachable yet. Check that DNS for $Domain and *.$Domain points at $relayIp, and that TCP 80, 443 and 7000 are open in your hosting provider's firewall (or forwarded by the router). Caddy retries on its own; see $LogDir\liwalink-caddy.err.log"
 }
 Write-Host @"
 
