@@ -41,6 +41,8 @@ cd LiwaLINK\relay
 powershell -ExecutionPolicy Bypass -File .\install-relay.ps1 -Domain link.example.com -Email ops@example.com
 ```
 
+Windows Defender usually quarantines the frp download, because attackers also use frp (it shows up as `Trojan:Win32/Kepavll` or `HackTool:Win32/Frp`), and the installer then stops and says so. Add `-DefenderExclusion` to exclude `C:\Program Files\LiwaLink\Relay` from Defender scanning. If you would rather not exclude anything, build frps from source and sign it with your own code-signing certificate (see Known limitations).
+
 This installs three Windows services, all set to start with Windows and restart on failure:
 
 | Service | What it runs |
@@ -156,7 +158,8 @@ The test starts the auth service, frps, a fake restaurant API and several agents
 - **Windows Defender may flag `frpc.exe`** as a "HackTool", because frp is also used by attackers. If Defender quarantines it, the install fails or the service won't start. The proper fix is to build frpc from source and sign it with your company's code-signing certificate. You can also submit the file to Microsoft as a false positive.
 - **Port 7000 outbound.** Some locked-down networks only allow 443. If that becomes a problem, frp can tunnel over WebSocket/TLS on 443 through Caddy (`transport.protocol = "wss"`).
 - **Let's Encrypt rate limits.** New certificates are limited per domain (currently 50 a week). For a large rollout, switch to a single wildcard certificate (`*.link.example.com`). That needs Caddy's DNS-challenge plugin for your DNS provider.
-- **Windows relay services run as LocalSystem.** That's the simplest setup that works. Running them under their own low-privilege service accounts is a worthwhile hardening step. Defender can also flag `frps.exe`, for the same reason as `frpc.exe`.
+- **Windows relay services run as LocalSystem.** That's the simplest setup that works. Running them under their own low-privilege service accounts is a worthwhile hardening step. Defender flags `frps.exe` too, for the same reason as `frpc.exe`; `install-relay.ps1 -DefenderExclusion` works around it with an exclusion.
+- **The Windows relay needs 80 and 443 to itself.** Caddy binds them, so the relay can't share a server with IIS sites. Either give the relay its own server (recommended: it is a separate security boundary anyway), or put IIS in front with URL Rewrite + ARR proxying `*.link.example.com` to `127.0.0.1:8080` and a wildcard certificate; the installer doesn't support that layout yet.
 - **One relay is a single point of failure.** Add monitoring, for example on `https://link.example.com/`. A second relay can come later.
 - **The registry is a JSON file** at `/var/lib/liwalink/restaurants.json`. `liwalink-auth.py` is small, so it's easy to point at your own customer database instead.
 - **Packaging.** For production, wrap the Windows agent in your existing installer, or an MSI, rather than a PowerShell script.

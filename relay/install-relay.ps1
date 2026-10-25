@@ -16,8 +16,17 @@
     the restaurants. Run from an elevated PowerShell; if scripts are blocked:
         powershell -ExecutionPolicy Bypass -File .\install-relay.ps1 ...
 
+    Windows Defender usually quarantines the frp download, because attackers
+    also use frp (seen as Trojan:Win32/Kepavll or HackTool:Win32/Frp). The
+    installer then stops and says so. -DefenderExclusion excludes the install
+    folder (and the download folder, for the duration of the install) from
+    Defender scanning. The alternative is to build and sign frps yourself.
+
 .EXAMPLE
     .\install-relay.ps1 -Domain link.example.com -Email ops@example.com
+
+.EXAMPLE
+    .\install-relay.ps1 -Domain link.example.com -Email ops@example.com -DefenderExclusion
 
 .EXAMPLE
     .\install-relay.ps1 -Uninstall
@@ -33,6 +42,10 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'Install')]
     [ValidatePattern('^[^\s|@]+@[^\s|@]+$')]
     [string] $Email,
+
+    # Exclude the install folder from Windows Defender so frps.exe is not quarantined.
+    [Parameter(ParameterSetName = 'Install')]
+    [switch] $DefenderExclusion,
 
     [Parameter(Mandatory, ParameterSetName = 'Uninstall')]
     [switch] $Uninstall
@@ -72,8 +85,22 @@ function Get-PublishedHash([string] $SumsFile, [string] $FileName) {
     ($line.Line -split '\s+')[0]
 }
 
+# Windows Defender quarantines files it flags as they are written. The download
+# then either fails with ERROR_VIRUS_INFECTED, or leaves a file that cannot be
+# read and disappears a moment later. frp is the usual victim.
+$QuarantineHint = "Windows Defender quarantined it because attackers also use frp. Re-run with -DefenderExclusion to exclude $InstallDir from Defender scanning, or build and sign frps yourself (see the README)."
+
 function Save-Download([string] $Url, [string] $OutFile) {
-    Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+    $name = Split-Path $OutFile -Leaf
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+        $stream = [IO.File]::OpenRead($OutFile)
+        $stream.Close()
+    } catch [IO.IOException] {
+        if ($_.Exception.HResult -ne -2147024671 -and $_.Exception.Message -notmatch 'virus') { throw }
+        throw "Could not download ${name}: $QuarantineHint"
+    }
+    if (-not (Test-Path $OutFile)) { throw "Could not download ${name}: $QuarantineHint" }
 }
 
 function Remove-RelayServices {
@@ -153,6 +180,7 @@ if ($Uninstall) {
     Remove-RelayServices
     Get-NetFirewallRule -DisplayName $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     if (Test-Path $InstallDir) { Remove-Item -Path $InstallDir -Recurse -Force }
+    Remove-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
     Write-Host "LiwaLink relay removed. The CA, restaurants and logs are kept in $ConfigDir."
     Write-Host 'Delete that folder too only if you will never reinstall: agents trust that CA.'
     return
@@ -191,6 +219,11 @@ try {
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('liwalink-relay-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
+    if ($DefenderExclusion) {
+        Write-Host "==> Excluding $InstallDir from Windows Defender scanning (frps is flagged as a hacking tool)"
+        Add-MpPreference -ExclusionPath $InstallDir, $tmp
+    }
+
     Write-Host "==> Downloading frps $FrpVersion, Caddy $CaddyVersion, Python $PythonVersion, WinSW $WinSWVersion"
     $frpZip = "frp_${FrpVersion}_windows_amd64.zip"
     $frpBase = "https://github.com/fatedier/frp/releases/download/v$FrpVersion"
@@ -227,7 +260,7 @@ try {
     $frps = Join-Path $InstallDir 'frps.exe'
     $caddy = Join-Path $InstallDir 'caddy.exe'
     foreach ($exe in $frps, $caddy, $python) {
-        if (-not (Test-Path $exe)) { throw "$exe disappeared after copying. Antivirus may have quarantined it." }
+        if (-not (Test-Path $exe)) { throw "$exe disappeared after copying. $QuarantineHint" }
     }
 
     # --- config folder: only SYSTEM (the services) and Administrators -----------------
@@ -304,6 +337,7 @@ rem   liwalink-admin add rest-1234 --name "Pizza Place"
     $https = Wait-Until { (Invoke-WebRequest -Uri "https://$Domain/ca.crt" -UseBasicParsing -TimeoutSec 10).StatusCode -eq 200 } 60
 } finally {
     Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    if ($DefenderExclusion) { Remove-MpPreference -ExclusionPath $tmp -ErrorAction SilentlyContinue }
 }
 
 Write-Host ''
